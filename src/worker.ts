@@ -146,7 +146,7 @@ const plugin = definePlugin({
     });
 
     // ══════════════════════════════════════════════════════════
-    // EVENT: agent.run.finished — schedule re-invoke if backlog
+    // EVENT: agent.run.finished — re-invoke if backlog + unblock ready parents
     // ══════════════════════════════════════════════════════════
     ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
       if (!cfg.enabled) return;
@@ -154,6 +154,56 @@ const plugin = definePlugin({
       const agentId = (payload?.agentId ?? "") as string;
       if (!agentId) return;
 
+      // ── Check for blocked parents that are now ready for synthesis ──
+      // When an agent completes a subtask, the parent may be ready to unblock
+      try {
+        const agentIssues = await ctx.issues.list({
+          companyId: event.companyId,
+          assigneeAgentId: agentId,
+        } as Record<string, unknown>);
+
+        // Find issues this agent just completed that have a parent
+        for (const issue of agentIssues) {
+          const iss = issue as Record<string, unknown>;
+          if (iss.status !== "done") continue;
+          const parentId = iss.parentId as string | undefined;
+          if (!parentId) continue;
+
+          // Check the parent
+          try {
+            const parent = await ctx.issues.get(parentId, event.companyId);
+            if (!parent) continue;
+            const p = parent as Record<string, unknown>;
+            if (p.status !== "blocked") continue;
+
+            // Check all siblings (children of parent)
+            const siblings = await ctx.issues.list({
+              companyId: event.companyId,
+              parentId,
+            } as Record<string, unknown>);
+            const openSiblings = siblings.filter((s: Record<string, unknown>) =>
+              s.status !== "done" && s.status !== "cancelled"
+            );
+
+            if (openSiblings.length === 0) {
+              // All subtasks done — unblock parent and invoke its assignee
+              await ctx.issues.update(parentId, { status: "todo" }, event.companyId);
+              const parentAgentId = p.assigneeAgentId as string;
+              if (parentAgentId) {
+                const parentAgentName = await getAgentName(parentAgentId, event.companyId);
+                ctx.logger.info("Unblocked parent issue, invoking for synthesis", {
+                  parentId,
+                  parentIdentifier: p.identifier,
+                  parentAgent: parentAgentName,
+                });
+                await tryInvoke(parentAgentId, event.companyId, parentAgentName, "subtasks complete → synthesis");
+              }
+            }
+          } catch { /* best effort */ }
+        }
+      } catch { /* best effort — don't block the re-invoke logic */ }
+
+      // ── Schedule re-invoke if this agent has more work ──
       const backlog = await countBacklog(agentId, event.companyId);
       if (backlog === 0) return;
 

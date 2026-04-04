@@ -13,6 +13,7 @@ var manifest = {
     "agents.read",
     "agents.invoke",
     "issues.read",
+    "issues.update",
     "plugin.state.read",
     "plugin.state.write",
     "activity.log.write",

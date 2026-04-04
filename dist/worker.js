@@ -159,6 +159,46 @@ var plugin = definePlugin({
       const payload = event.payload;
       const agentId = payload?.agentId ?? "";
       if (!agentId) return;
+      try {
+        const agentIssues = await ctx.issues.list({
+          companyId: event.companyId,
+          assigneeAgentId: agentId
+        });
+        for (const issue of agentIssues) {
+          const iss = issue;
+          if (iss.status !== "done") continue;
+          const parentId = iss.parentId;
+          if (!parentId) continue;
+          try {
+            const parent = await ctx.issues.get(parentId, event.companyId);
+            if (!parent) continue;
+            const p = parent;
+            if (p.status !== "blocked") continue;
+            const siblings = await ctx.issues.list({
+              companyId: event.companyId,
+              parentId
+            });
+            const openSiblings = siblings.filter(
+              (s) => s.status !== "done" && s.status !== "cancelled"
+            );
+            if (openSiblings.length === 0) {
+              await ctx.issues.update(parentId, { status: "todo" }, event.companyId);
+              const parentAgentId = p.assigneeAgentId;
+              if (parentAgentId) {
+                const parentAgentName = await getAgentName(parentAgentId, event.companyId);
+                ctx.logger.info("Unblocked parent issue, invoking for synthesis", {
+                  parentId,
+                  parentIdentifier: p.identifier,
+                  parentAgent: parentAgentName
+                });
+                await tryInvoke(parentAgentId, event.companyId, parentAgentName, "subtasks complete \u2192 synthesis");
+              }
+            }
+          } catch {
+          }
+        }
+      } catch {
+      }
       const backlog = await countBacklog(agentId, event.companyId);
       if (backlog === 0) return;
       const state = await loadState(event.companyId);
