@@ -223,19 +223,19 @@ const plugin = definePlugin({
           }
         }
 
-        // Also check for agents with pending issues that aren't tracked yet
-        // (bootstraps existing backlogs on first run)
+        // Scan all agents for pending issues (catches untracked backlogs)
         try {
           const agents = await ctx.agents.list({ companyId });
           for (const agent of agents) {
             if (agent.status === "paused") continue;
-            if (state.agents[agent.id]) continue; // already tracked
+            // Skip if recently invoked (use 3x cooldown for scan to avoid spam)
+            if (isInCooldown(state, agent.id, cfg.cooldownSec * 3)) continue;
             const backlog = await countBacklog(agent.id, companyId);
             if (backlog > 0) {
-              await tryInvoke(agent.id, companyId, agent.name || agent.id, "initial backlog");
+              await tryInvoke(agent.id, companyId, agent.name || agent.id, "backlog scan");
             }
           }
-        } catch { /* agents.list may fail — that's ok, tracked agents still work */ }
+        } catch { /* agents.list may fail — tracked agents still work via events */ }
 
         await saveState(companyId, state);
       }

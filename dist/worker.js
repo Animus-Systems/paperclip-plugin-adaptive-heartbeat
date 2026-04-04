@@ -215,10 +215,10 @@ var plugin = definePlugin({
           const agents = await ctx.agents.list({ companyId });
           for (const agent of agents) {
             if (agent.status === "paused") continue;
-            if (state.agents[agent.id]) continue;
+            if (isInCooldown(state, agent.id, cfg.cooldownSec * 3)) continue;
             const backlog = await countBacklog(agent.id, companyId);
             if (backlog > 0) {
-              await tryInvoke(agent.id, companyId, agent.name || agent.id, "initial backlog");
+              await tryInvoke(agent.id, companyId, agent.name || agent.id, "backlog scan");
             }
           }
         } catch {
