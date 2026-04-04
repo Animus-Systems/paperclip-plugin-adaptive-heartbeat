@@ -39,17 +39,14 @@ const plugin = definePlugin({
 
     // ── Helper: count pending issues for an agent ────────────
     async function countBacklog(agentId: string, companyId: string): Promise<number> {
-      const issues = await ctx.issues.list({
-        companyId,
-        assigneeAgentId: agentId,
-        status: "todo" as unknown as undefined, // SDK type mismatch workaround
-      });
-      const inProgress = await ctx.issues.list({
-        companyId,
-        assigneeAgentId: agentId,
-        status: "in_progress" as unknown as undefined,
-      });
-      return issues.length + inProgress.length;
+      try {
+        const all = await ctx.issues.list({ companyId, assigneeAgentId: agentId } as Record<string, unknown>);
+        return all.filter((i: Record<string, unknown>) =>
+          i.status === "todo" || i.status === "in_progress"
+        ).length;
+      } catch {
+        return 0;
+      }
     }
 
     // ── Helper: invoke an agent with debounce ────────────────
@@ -104,36 +101,48 @@ const plugin = definePlugin({
       }
     }
 
+    // ── Helper: get assignee from issue ────────────────────────
+    async function getIssueAssignee(issueId: string, companyId: string): Promise<string | null> {
+      try {
+        const issue = await ctx.issues.get(issueId, companyId);
+        return (issue as Record<string, unknown>)?.assigneeAgentId as string ?? null;
+      } catch {
+        return null;
+      }
+    }
+
     // ══════════════════════════════════════════════════════════
     // EVENT: issue.created — invoke assigned agent immediately
     // ══════════════════════════════════════════════════════════
     ctx.events.on("issue.created", async (event: PluginEvent) => {
       if (!cfg.enabled) return;
-      const payload = event.payload as Record<string, unknown>;
-      const agentId = (payload?.assigneeAgentId ?? payload?.agentId ?? "") as string;
+
+      // Look up the issue to find the assignee (payload doesn't include it)
+      const agentId = await getIssueAssignee(event.entityId, event.companyId);
       if (!agentId) return;
 
+      // Store company ID for the job handler
+      await ctx.state.set({ scopeKind: "instance", stateKey: "known-company-id" }, event.companyId).catch(() => {});
+
       const agentName = await getAgentName(agentId, event.companyId);
+      ctx.logger.info("Issue created, invoking assignee", { agentId, agentName, issueId: event.entityId });
       await tryInvoke(agentId, event.companyId, agentName, "issue assigned");
     });
 
     // ══════════════════════════════════════════════════════════
-    // EVENT: issue.updated — invoke if agent assignment changed
+    // EVENT: issue.updated — invoke if agent is assigned
     // ══════════════════════════════════════════════════════════
     ctx.events.on("issue.updated", async (event: PluginEvent) => {
       if (!cfg.enabled) return;
-      const payload = event.payload as Record<string, unknown>;
-      const changes = payload?.changes as Record<string, unknown> | undefined;
 
-      // Only react to assignment changes or status changes to todo
-      const newAssignee = (changes?.assigneeAgentId ?? payload?.assigneeAgentId ?? "") as string;
-      if (!newAssignee) return;
+      const agentId = await getIssueAssignee(event.entityId, event.companyId);
+      if (!agentId) return;
 
-      // If reassigned, invoke the new assignee
-      if (changes?.assigneeAgentId) {
-        const agentName = await getAgentName(newAssignee, event.companyId);
-        await tryInvoke(newAssignee, event.companyId, agentName, "issue reassigned");
-      }
+      // Store company ID for the job handler
+      await ctx.state.set({ scopeKind: "instance", stateKey: "known-company-id" }, event.companyId).catch(() => {});
+
+      const agentName = await getAgentName(agentId, event.companyId);
+      await tryInvoke(agentId, event.companyId, agentName, "issue updated");
     });
 
     // ══════════════════════════════════════════════════════════
@@ -177,59 +186,59 @@ const plugin = definePlugin({
     ctx.jobs.register("backlog-check", async () => {
       if (!cfg.enabled) return;
 
-      // Discover company ID from recent state
-      let companyId = "";
+      // Iterate over all companies (supports multi-company setups)
+      let companies: Array<{ id: string; name?: string }> = [];
       try {
-        const stored = await ctx.state.get({ scopeKind: "instance", stateKey: "known-company-id" });
-        if (stored && typeof stored === "string") companyId = stored;
-      } catch { /* fallback */ }
-
-      if (!companyId) {
-        // Try to find it from agents
-        try {
-          const agents = await ctx.agents.list({ limit: 1 } as Record<string, unknown>);
-          if (agents.length > 0) {
-            companyId = (agents[0] as Record<string, unknown>).companyId as string ||
-                        (agents[0] as Record<string, unknown>).company_id as string || "";
-          }
-        } catch { /* no company context yet */ }
+        companies = await ctx.companies.list() as Array<{ id: string; name?: string }>;
+      } catch (err) {
+        ctx.logger.warn("Failed to list companies", { error: String(err) });
+        return;
       }
 
-      if (!companyId) return;
+      if (companies.length === 0) return;
 
-      // Store for future use
-      await ctx.state.set({ scopeKind: "instance", stateKey: "known-company-id" }, companyId).catch(() => {});
+      for (const company of companies) {
+        const companyId = company.id;
+        const state = await loadState(companyId);
 
-      const state = await loadState(companyId);
-      const due = getDueInvocations(state);
+        // Fire any due delayed re-invocations
+        const due = getDueInvocations(state);
+        for (const agentId of due) {
+          clearPending(state, agentId);
+          const agentName = await getAgentName(agentId, companyId);
+          await tryInvoke(agentId, companyId, agentName, "backlog re-invoke");
+        }
 
-      for (const agentId of due) {
-        clearPending(state, agentId);
-        const agentName = await getAgentName(agentId, companyId);
-        await tryInvoke(agentId, companyId, agentName, "backlog re-invoke");
-      }
-
-      // Also scan for agents with backlog that aren't scheduled
-      try {
-        const agents = await ctx.agents.list({ companyId });
-        for (const agent of agents) {
-          if (agent.status === "paused") continue;
-          const agentState = state.agents[agent.id];
-
-          // Skip if recently invoked or already has pending
-          if (agentState?.pendingInvokeAt) continue;
-          if (isInCooldown(state, agent.id, cfg.cooldownSec * 3)) continue; // 3x cooldown for scan
-
-          const backlog = await countBacklog(agent.id, companyId);
-          if (backlog > 0) {
-            await tryInvoke(agent.id, companyId, agent.name || agent.id, "backlog scan");
+        // Scan agents with known backlog from previous events
+        for (const [agentId, agentState] of Object.entries(state.agents)) {
+          if (agentState.lastBacklogCount > 0 && !agentState.pendingInvokeAt) {
+            if (isInCooldown(state, agentId, cfg.cooldownSec * 3)) continue;
+            const agentName = await getAgentName(agentId, companyId);
+            const currentBacklog = await countBacklog(agentId, companyId);
+            if (currentBacklog > 0) {
+              await tryInvoke(agentId, companyId, agentName, "backlog scan");
+            } else {
+              agentState.lastBacklogCount = 0;
+            }
           }
         }
-      } catch (err) {
-        ctx.logger.warn("Backlog scan failed", { error: String(err) });
-      }
 
-      await saveState(companyId, state);
+        // Also check for agents with pending issues that aren't tracked yet
+        // (bootstraps existing backlogs on first run)
+        try {
+          const agents = await ctx.agents.list({ companyId });
+          for (const agent of agents) {
+            if (agent.status === "paused") continue;
+            if (state.agents[agent.id]) continue; // already tracked
+            const backlog = await countBacklog(agent.id, companyId);
+            if (backlog > 0) {
+              await tryInvoke(agent.id, companyId, agent.name || agent.id, "initial backlog");
+            }
+          }
+        } catch { /* agents.list may fail — that's ok, tracked agents still work */ }
+
+        await saveState(companyId, state);
+      }
     });
 
     // ══════════════════════════════════════════════════════════

@@ -12,12 +12,14 @@ const manifest: PaperclipPluginManifestV1 = {
 
   capabilities: [
     "events.subscribe",
+    "companies.read",
     "agents.read",
     "agents.invoke",
     "issues.read",
     "plugin.state.read",
     "plugin.state.write",
     "activity.log.write",
+    "jobs.schedule",
     "ui.dashboardWidget.register",
   ],
 
