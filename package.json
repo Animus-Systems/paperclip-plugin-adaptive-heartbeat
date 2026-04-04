@@ -1,0 +1,31 @@
+{
+  "name": "@animusystems/paperclip-plugin-adaptive-heartbeat",
+  "version": "0.1.0",
+  "description": "Event-driven agent scheduling for Paperclip — invokes agents on issue assignment, scales frequency by backlog.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Animus Systems",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "^2026.318.0"
+  },
+  "devDependencies": {
+    "@paperclipai/shared": "^2026.318.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "esbuild": "^0.27.3",
+    "react": "^19.0.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
