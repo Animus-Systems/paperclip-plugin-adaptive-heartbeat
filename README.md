@@ -21,6 +21,7 @@ This plugin makes agent scheduling event-driven:
 | Issue reassigned | Invoke new assignee immediately |
 | Agent finishes run, has more work | Re-invoke after 60-120s delay |
 | Agent finishes run, backlog clear | Do nothing (agent rests) |
+| All subtasks of blocked parent done | Unblock parent, invoke for synthesis |
 | Periodic scan (every 2 min) | Catch any missed backlogs |
 
 **Cost impact: Zero or negative.** Eliminates idle heartbeat waste. Only invokes agents that have actual work.
@@ -41,6 +42,10 @@ Issue Created/Assigned
 ```
 
 Debouncing prevents rapid-fire invocations (e.g., 5 issues assigned at once → 1 invocation, not 5).
+
+### Parent Issue Unblocking
+
+When Task Triage decomposes a complex task into subtasks, the parent issue is blocked until all subtasks complete. This plugin detects when the last subtask finishes, automatically unblocks the parent, and invokes the parent's assignee for synthesis — no waiting for the next heartbeat cycle.
 
 ## Configuration
 
