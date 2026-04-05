@@ -152,7 +152,7 @@ const plugin = definePlugin({
       if (!cfg.enabled) return;
 
       const payload = event.payload as Record<string, unknown>;
-      const body = (payload?.body ?? payload?.content ?? "") as string;
+      const body = (payload?.body ?? payload?.content ?? payload?.bodySnippet ?? "") as string;
 
       // Check for @request(agent=<name>) pattern
       const requestMatch = body.match(/@request\(\s*agent\s*=\s*([^,)]+)/i);
