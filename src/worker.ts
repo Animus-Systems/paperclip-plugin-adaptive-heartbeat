@@ -146,6 +146,64 @@ const plugin = definePlugin({
     });
 
     // ══════════════════════════════════════════════════════════
+    // EVENT: issue.comment.created — cross-agent @request trigger
+    // ══════════════════════════════════════════════════════════
+    ctx.events.on("issue.comment.created", async (event: PluginEvent) => {
+      if (!cfg.enabled) return;
+
+      const payload = event.payload as Record<string, unknown>;
+      const body = (payload?.body ?? payload?.content ?? "") as string;
+
+      // Check for @request(agent=<name>) pattern
+      const requestMatch = body.match(/@request\(\s*agent\s*=\s*([^,)]+)/i);
+      if (!requestMatch) return;
+
+      const targetName = requestMatch[1].trim().toLowerCase();
+      if (!targetName) return;
+
+      // Find the target agent by name
+      try {
+        const agents = await ctx.agents.list({ companyId: event.companyId });
+        const target = agents.find((a) => (a.name || "").toLowerCase() === targetName);
+        if (!target) {
+          ctx.logger.debug("@request target agent not found", { targetName });
+          return;
+        }
+
+        ctx.logger.info("Cross-agent @request detected", {
+          targetAgent: target.name,
+          issueId: event.entityId,
+          requestSnippet: body.substring(0, 100),
+        });
+
+        // Invoke the target agent with context about the request
+        const state = await loadState(event.companyId);
+        if (isInCooldown(state, target.id, cfg.cooldownSec)) {
+          ctx.logger.debug("Skipping @request invoke (cooldown)", { agentId: target.id });
+          return;
+        }
+
+        await ctx.agents.invoke(target.id, event.companyId, {
+          prompt: `You have been requested via @request on an issue. Check your assigned issues and any recent comments for requests tagged to you.`,
+          reason: "adaptive-heartbeat: cross_agent_request",
+        });
+
+        markInvoked(state, target.id, target.name || targetName, "cross_agent_request", 0);
+        await saveState(event.companyId, state);
+
+        await ctx.activity.log({
+          companyId: event.companyId,
+          message: `Adaptive Heartbeat: invoked ${target.name} via @request on issue`,
+          entityType: "agent",
+          entityId: target.id,
+          metadata: { trigger: "cross_agent_request", issueId: event.entityId },
+        });
+      } catch (err) {
+        ctx.logger.warn("Failed to process @request", { error: String(err) });
+      }
+    });
+
+    // ══════════════════════════════════════════════════════════
     // EVENT: agent.run.finished — re-invoke if backlog + unblock ready parents
     // ══════════════════════════════════════════════════════════
     ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
