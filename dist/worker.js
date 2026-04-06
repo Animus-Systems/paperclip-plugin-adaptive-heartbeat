@@ -272,13 +272,21 @@ var plugin = definePlugin({
       if (companies.length === 0) {
         try {
           const stored = await ctx.state.get({ scopeKind: "instance", stateKey: "known-company-id" });
-          if (stored && typeof stored === "string") {
+          if (typeof stored === "string" && stored.length > 10) {
             companies = [{ id: stored }];
           }
         } catch {
         }
       }
-      if (companies.length === 0) return;
+      if (companies.length === 0) {
+        try {
+          const memoryPlugin = await ctx.state.get({ scopeKind: "instance", stateKey: "known-company-id" });
+          ctx.logger.warn("Backlog check: no companies found", { storedCompanyId: memoryPlugin, type: typeof memoryPlugin });
+        } catch {
+        }
+        return;
+      }
+      ctx.logger.info("Backlog check starting", { companies: companies.length });
       for (const company of companies) {
         const companyId = company.id;
         const state = await loadState(companyId);
@@ -302,6 +310,7 @@ var plugin = definePlugin({
         }
         try {
           const agents = await ctx.agents.list({ companyId });
+          ctx.logger.info("Backlog scan: checking agents", { companyId, agentCount: agents.length });
           for (const agent of agents) {
             if (agent.status === "paused") continue;
             if (isInCooldown(state, agent.id, cfg.cooldownSec * 3)) continue;

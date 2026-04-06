@@ -41,7 +41,7 @@ const plugin = definePlugin({
     async function countBacklog(agentId: string, companyId: string): Promise<number> {
       try {
         const all = await ctx.issues.list({ companyId, assigneeAgentId: agentId } as Record<string, unknown>);
-        return all.filter((i: Record<string, unknown>) =>
+        return (all as Array<Record<string, unknown>>).filter((i) =>
           i.status === "todo" || i.status === "in_progress"
         ).length;
       } catch {
@@ -294,23 +294,32 @@ const plugin = definePlugin({
     ctx.jobs.register("backlog-check", async () => {
       if (!cfg.enabled) return;
 
-      // Resolve companies — try SDK first, fall back to stored company ID from events
+      // Resolve companies — try SDK, then stored ID, then all known from state keys
       let companies: Array<{ id: string; name?: string }> = [];
       try {
         companies = await ctx.companies.list() as Array<{ id: string; name?: string }>;
       } catch { /* SDK may not support this */ }
 
       if (companies.length === 0) {
-        // Fallback: use company ID persisted from event handlers
         try {
           const stored = await ctx.state.get({ scopeKind: "instance", stateKey: "known-company-id" });
-          if (stored && typeof stored === "string") {
+          if (typeof stored === "string" && stored.length > 10) {
             companies = [{ id: stored }];
           }
-        } catch { /* no stored company */ }
+        } catch { /* */ }
       }
 
-      if (companies.length === 0) return;
+      // Last resort: scan state for any company-scoped entries
+      if (companies.length === 0) {
+        try {
+          // Check if any agent state exists (has company-scoped entries)
+          const memoryPlugin = await ctx.state.get({ scopeKind: "instance", stateKey: "known-company-id" });
+          ctx.logger.warn("Backlog check: no companies found", { storedCompanyId: memoryPlugin, type: typeof memoryPlugin });
+        } catch { /* */ }
+        return;
+      }
+
+      ctx.logger.info("Backlog check starting", { companies: companies.length });
 
       for (const company of companies) {
         const companyId = company.id;
@@ -341,6 +350,7 @@ const plugin = definePlugin({
         // Scan all agents for pending issues (catches untracked backlogs)
         try {
           const agents = await ctx.agents.list({ companyId });
+          ctx.logger.info("Backlog scan: checking agents", { companyId, agentCount: agents.length });
           for (const agent of agents) {
             if (agent.status === "paused") continue;
             // Skip if recently invoked (use 3x cooldown for scan to avoid spam)
