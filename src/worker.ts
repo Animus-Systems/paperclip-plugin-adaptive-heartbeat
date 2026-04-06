@@ -294,13 +294,20 @@ const plugin = definePlugin({
     ctx.jobs.register("backlog-check", async () => {
       if (!cfg.enabled) return;
 
-      // Iterate over all companies (supports multi-company setups)
+      // Resolve companies — try SDK first, fall back to stored company ID from events
       let companies: Array<{ id: string; name?: string }> = [];
       try {
         companies = await ctx.companies.list() as Array<{ id: string; name?: string }>;
-      } catch (err) {
-        ctx.logger.warn("Failed to list companies", { error: String(err) });
-        return;
+      } catch { /* SDK may not support this */ }
+
+      if (companies.length === 0) {
+        // Fallback: use company ID persisted from event handlers
+        try {
+          const stored = await ctx.state.get({ scopeKind: "instance", stateKey: "known-company-id" });
+          if (stored && typeof stored === "string") {
+            companies = [{ id: stored }];
+          }
+        } catch { /* no stored company */ }
       }
 
       if (companies.length === 0) return;

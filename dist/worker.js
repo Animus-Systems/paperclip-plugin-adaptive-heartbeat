@@ -267,9 +267,16 @@ var plugin = definePlugin({
       let companies = [];
       try {
         companies = await ctx.companies.list();
-      } catch (err) {
-        ctx.logger.warn("Failed to list companies", { error: String(err) });
-        return;
+      } catch {
+      }
+      if (companies.length === 0) {
+        try {
+          const stored = await ctx.state.get({ scopeKind: "instance", stateKey: "known-company-id" });
+          if (stored && typeof stored === "string") {
+            companies = [{ id: stored }];
+          }
+        } catch {
+        }
       }
       if (companies.length === 0) return;
       for (const company of companies) {
