@@ -232,7 +232,7 @@ const plugin = definePlugin({
             const parent = await ctx.issues.get(parentId, event.companyId);
             if (!parent) continue;
             const p = parent as Record<string, unknown>;
-            if (p.status !== "blocked") continue;
+            if (p.status !== "blocked" && p.status !== "in_progress") continue;
 
             // Check all siblings (children of parent)
             const siblings = await ctx.issues.list({
